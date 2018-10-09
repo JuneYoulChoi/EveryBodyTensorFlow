@@ -1,7 +1,7 @@
 #-*- coding: utf-8 -*-
 #! /usr/bin/env python
 '''
-    filename: run_tf_slim_lenet5_mnist.py
+    filename: run_tf_basic_lenet5_mnist.py
 
     description: simple end-to-end LetNet5 implementation
         - For the purpose of EverybodyTensorFlow tutorial
@@ -12,7 +12,6 @@
         - references:
             - https://github.com/tensorflow/models/blob/master/tutorials/image/mnist/convolutional.py
             - https://github.com/sujaybabruwad/LeNet-in-Tensorflow/blob/master/LeNet-Lab.ipynb
-
 
     author: Jaewook Kang
     date  : 2018 Feb.
@@ -32,8 +31,10 @@ from os import getcwd
 
 import numpy as np
 import tensorflow as tf
-import matplotlib.pyplot as plt
 import tensorflow.contrib.slim as slim
+import matplotlib.pyplot as plt
+
+
 
 sys.path.insert(0, getcwd()+'/tf_my_modules/cnn')
 
@@ -44,7 +45,7 @@ from mnist_data_loader import MnistLoader
 
 
 # configure training parameters =====================================
-TRAININGSET_SIZE     = 1000
+TRAININGSET_SIZE     = 5000
 VALIDATIONSET_SIZE   = 1000
 TESTSET_SIZE         = 1000
 
@@ -63,37 +64,57 @@ class TrainConfig(object):
         self.display_step   = 5
         self.total_batch    = int(TRAININGSET_SIZE / self.minibatch_size)
 
-
         # batch norm config
-        self.batch_norm_decay   =  0.999
-        self.batch_norm_fused   =  True
+        self.batch_norm_epsilon = 1E-5
+        self.batch_norm_decay   = 0.99
         self.FLAGS              = None
 
         # FC layer config
-        self.dropout_keeprate       = 0.8
-        self.fc_weights_initializer = tf.contrib.layers.xavier_initializer
-        self.fc_weights_regularizer = tf.contrib.layers.l2_regularizer(4E-5)
+        self.dropout_keeprate   = 0.8
+        self.fc_layer_l2loss_epsilon = 5E-5
 
-
-        # conv layer config
-        self.weights_initializer = tf.contrib.layers.xavier_initializer()
-        self.weights_regularizer = None
-        self.biases_initializer  = slim.init_ops.zeros_initializer()
-
-        self.is_trainable       = True
-        self.activation_fn      = tf.nn.relu
-        self.normalizer_fn      = slim.batch_norm
-
-
-        self.random_seed        = 66478
         self.tf_data_type       = tf.float32
+
+        self.weight_initializer = tf.contrib.layers.xavier_initializer()
+        self.random_seed        = 66478
 
         # tensorboard config
         now = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        self.root_logdir = getcwd() + '/export/lenet5_slim/'
+        self.root_logdir = getcwd() + '/export/lenet5/'
 
         self.ckptdir  = self.root_logdir + '/pb_and_ckpt/'
         self.tflogdir = "{}/run-{}/".format(self.root_logdir+'/tf_logs', now)
+
+
+
+def conv_layer(layer_in,
+               kernel_shape,
+               kernel_stride,
+               kernel_padding,
+               train_config,
+               scope=None):
+
+    with tf.variable_scope(name_or_scope=scope,values=[layer_in]):
+
+        weight = tf.get_variable(name='weight',
+                                 shape=kernel_shape,
+                                 dtype=train_config.tf_data_type,
+                                 initializer= train_config.weight_initializer)
+
+        bias = tf.get_variable(name='bias',
+                               shape=kernel_shape[3],
+                               dtype=train_config.tf_data_type,
+                               initializer=train_config.weight_initializer)
+
+        conv_out = tf.nn.conv2d(input= layer_in,
+                                filter=weight,
+                                strides =kernel_stride,
+                                padding=kernel_padding)
+
+        logit_out = tf.nn.bias_add(value=conv_out,
+                                   bias=bias)
+
+        return logit_out
 
 
 
@@ -103,96 +124,102 @@ def get_model(model_in,
               train_config,
               scope):
 
-    model_chout_num = \
-    {
-        'c1': 6,
-        'c3': 16,
-        'c5': 120,
-        'f6': 84,
-        'out':10
+    chin_num = model_in.get_shape().as_list()[3]
+
+    model_shape ={
+        'c1_shape': [5,5,chin_num,6],
+        's2_shape': [1,2,2,1],
+        'c3_shape': [5,5,6,16],
+        's4_shape': [1,2,2,1],
+        'c5_shape': [5,5,16,120],
+        'f6_shape': [120,84],
+        'out_shape': [84,10]
     }
+
 
     net = model_in
     with tf.variable_scope(name_or_scope=scope,values=[model_in]):
 
-        # batch norm arg_scope
-        with slim.arg_scope([train_config.normalizer_fn],
-                            decay=train_config.batch_norm_decay,
-                            fused=train_config.batch_norm_fused,
-                            is_training=train_config.is_trainable,
-                            activation_fn=train_config.activation_fn):
+        c1_out   = slim.conv2d(inputs=net,
+                               num_outputs=6,
+                               kernel_size=[5,5],
+                               stride=[1,1],
+                               padding='SAME',
+                               activation_fn=tf.nn.relu,
+                               weights_initializer=train_config.weight_initializer,
+                               biases_initializer=tf.zeros_initializer(),
+                               trainable=True,
+                               scope='c1_conv')
 
-            if train_config.normalizer_fn == None:
-                conv_activation_fn = train_config.activation_fn
-            else:
-                conv_activation_fn = None
-            # max_pool arg_scope
-            with slim.arg_scope([slim.max_pool2d],
-                                stride      = [2,2],
-                                kernel_size = [2,2],
-                                padding     = 'VALID'):
-
-                # convolutional layer arg_scope
-                with slim.arg_scope([slim.conv2d],
-                                        kernel_size = [5,5],
-                                        stride      = [1,1],
-                                        weights_initializer = train_config.weights_initializer,
-                                        weights_regularizer = train_config.weights_regularizer,
-                                        biases_initializer  = train_config.biases_initializer,
-                                        trainable           = train_config.is_trainable,
-                                        activation_fn       = conv_activation_fn,
-                                        normalizer_fn       = train_config.normalizer_fn):
+        # c1_logit = conv_layer(net,
+        #                     kernel_shape=model_shape['c1_shape'],
+        #                     kernel_stride=[1,1,1,1],
+        #                     kernel_padding='SAME',
+        #                     train_config=train_config,
+        #                     scope='c1_conv')
+        # c1_out = tf.nn.relu(c1_logit)
 
 
-                    net = slim.conv2d(inputs=    net,
-                                     num_outputs= model_chout_num['c1'],
-                                     padding    = 'SAME',
-                                     scope      = 'c1_conv')
+        s2_out = slim.max_pool2d(inputs=c1_out,
+                                 kernel_size=[2,2],
+                                 stride=[2,2],
+                                 padding='VALID',
+                                 scope='s2_pool')
 
-                    net = slim.max_pool2d(inputs=   net,
-                                          scope ='s2_pool')
+        # s2_out  = tf.nn.max_pool(value=c1_out,
+        #                          ksize=model_shape['s2_shape'],
+        #                          strides=[1,2,2,1],
+        #                          padding='VALID',
+        #                          name='s2_pool')
 
-                    net = slim.conv2d(inputs        = net,
-                                      num_outputs   = model_chout_num['c3'],
-                                      padding       = 'VALID',
-                                      scope         = 'c3_conv')
+        c3_logit  = conv_layer(s2_out,
+                             kernel_shape=model_shape['c3_shape'],
+                             kernel_stride=[1,1,1,1],
+                             kernel_padding='VALID',
+                             train_config=train_config,
+                             scope='c3_conv')
+        c3_out  = tf.nn.relu(c3_logit)
 
-                    net = slim.max_pool2d(inputs    = net,
-                                          scope     = 's4_pool')
+        s4_out  = tf.nn.max_pool(value=c3_out,
+                                 ksize=model_shape['s4_shape'],
+                                 strides=[1,2,2,1],
+                                 padding='VALID',
+                                 name='s4_pool')
 
-                    net  = slim.conv2d(inputs       = net,
-                                       num_outputs  = model_chout_num['c5'],
-                                       padding      = 'VALID',
-                                       scope        = 'c5_conv')
-
-
-        # output layer by fully-connected layer
-        with slim.arg_scope([slim.fully_connected],
-                            trainable=      train_config.is_trainable):
-
-            with slim.arg_scope([slim.dropout],
-                                keep_prob   =dropout_keeprate_node,
-                                is_training=train_config.is_trainable):
-
-                net = slim.fully_connected(inputs        =net,
-                                           num_outputs  = model_chout_num['f6'],
-                                           activation_fn= train_config.activation_fn,
-                                           scope        ='f6_fc')
-
-                net = slim.dropout(inputs=net,
-                                   scope='f6_dropout')
-
-                net = slim.fully_connected(inputs       =net,
-                                           num_outputs  =model_chout_num['out'],
+        c5_logit  = conv_layer(s4_out,
+                             kernel_shape=model_shape['c5_shape'],
+                             kernel_stride=[1,1,1,1],
+                             kernel_padding='VALID',
+                             train_config=train_config,
+                             scope='c5_conv')
+        c5_out      = tf.nn.relu(c5_logit)
+        f6_logit    = slim.fully_connected(inputs=c5_out,
+                                           num_outputs=84,
                                            activation_fn=None,
-                                           scope        ='out_fc')
+                                           weights_initializer=train_config.weight_initializer,
+                                           biases_initializer=tf.zeros_initializer(),
+                                           trainable=True,
+                                           scope='f6_layer')
+        f6_logit    = slim.dropout(inputs=f6_logit,
+                                   keep_prob=dropout_keeprate_node,
+                                   is_training=True,
+                                   seed=train_config.random_seed)
 
-                out_logit = slim.dropout(inputs=net,
-                                         scope='out_dropout')
 
-                out_logit = tf.reshape(out_logit,
-                                       shape=[-1,
-                                              model_chout_num['out']])
+        # f6_logit    = tf.layers.dense(c5_out,model_shape['f6_shape'][1])
+        # f6_logit    = tf.nn.dropout(x=f6_logit,
+        #                             keep_prob=dropout_keeprate_node,
+        #                             seed=train_config.random_seed)
+        f6_out      = tf.nn.relu(f6_logit)
+
+        out_logit   = tf.layers.dense(f6_out,model_shape['out_shape'][1])
+        out_logit   = tf.nn.dropout(x=out_logit,
+                                    keep_prob=dropout_keeprate_node,
+                                    seed=train_config.random_seed)
+
+        out_logit = tf.reshape(out_logit,
+                               shape=[-1,
+                                      model_shape['out_shape'][1]])
 
         return out_logit
 
@@ -203,8 +230,8 @@ if __name__ == '__main__':
 
     # worker instance declaration
     datafilename_worker = DataFilename()
-    mnist_data_loader = MnistLoader()
-    trainconfig_worker = TrainConfig()
+    mnist_data_loader   = MnistLoader()
+    trainconfig_worker  = TrainConfig()
 
     # Download the data
     train_data_filepathname = mnist_data_loader.download_mnist_dataset(
@@ -212,7 +239,8 @@ if __name__ == '__main__':
     train_labels_filepathname = mnist_data_loader.download_mnist_dataset(
         filename=datafilename_worker.traininglabels_filename)
 
-    test_data_filepathname = mnist_data_loader.download_mnist_dataset(filename=datafilename_worker.testimages_filename)
+    test_data_filepathname  = mnist_data_loader.download_mnist_dataset(
+        filename=datafilename_worker.testimages_filename)
     test_labels_filepathname = mnist_data_loader.download_mnist_dataset(
         filename=datafilename_worker.testlabels_filename)
 
@@ -250,10 +278,10 @@ if __name__ == '__main__':
 
         dropout_keeprate_node = tf.placeholder(dtype=trainconfig_worker.tf_data_type)
 
-        model_out = get_model(model_in              = lenet5_model_in,
-                              dropout_keeprate_node =dropout_keeprate_node,
-                              train_config          = trainconfig_worker,
-                              scope                 = 'model')
+        model_out = get_model(model_in = lenet5_model_in,
+                              dropout_keeprate_node=dropout_keeprate_node,
+                              train_config = trainconfig_worker,
+                              scope         = 'model')
 
         loss_op = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=lenet5_label,
                                                                                 logits=model_out))
